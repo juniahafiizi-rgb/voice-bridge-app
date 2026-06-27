@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Voice Bridge — English to Luganda</title>
+<meta name="description" content="Translate text, audio, video, and documents from English into spoken Luganda." />
+<meta name="theme-color" content="#0F2E2B" />
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Work+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 40 40" width="28" height="28">
+          <path d="M4 20 Q12 8, 20 20 T36 20" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+          <path d="M4 20 Q12 32, 20 20 T36 20" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.45"/>
+        </svg>
+      </span>
+      <div>
+        <h1>Voice Bridge</h1>
+        <p class="tagline">English in. Luganda, spoken.</p>
+      </div>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Input type">
+    <button class="tab is-active" role="tab" aria-selected="true" data-tab="text">Text</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="audio">Audio</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="video">Video</button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="document">Document</button>
+  </nav>
+
+  <main class="panels">
+
+    <!-- TEXT -->
+    <section class="panel is-active" data-panel="text" role="tabpanel">
+      <label class="field-label" for="text-input">English text</label>
+      <textarea id="text-input" rows="5" maxlength="5000" placeholder="Type or paste English text here…"></textarea>
+      <p class="char-count"><span id="text-count">0</span> / 5000</p>
+    </section>
+
+    <!-- AUDIO -->
+    <section class="panel" data-panel="audio" role="tabpanel" hidden>
+      <label class="field-label" for="audio-input">English audio file</label>
+      <p class="field-hint">mp3, wav, ogg, m4a, or aac — up to 25MB</p>
+      <input type="file" id="audio-input" accept=".mp3,.wav,.ogg,.m4a,.aac" />
+    </section>
+
+    <!-- VIDEO -->
+    <section class="panel" data-panel="video" role="tabpanel" hidden>
+      <label class="field-label" for="video-input">English video file</label>
+      <p class="field-hint">mp4, mov, mkv, or webm — up to 150MB</p>
+      <input type="file" id="video-input" accept=".mp4,.mov,.mkv,.webm" />
+    </section>
+
+    <!-- DOCUMENT -->
+    <section class="panel" data-panel="document" role="tabpanel" hidden>
+      <label class="field-label" for="document-input">Book, novel, or document</label>
+      <p class="field-hint">pdf, epub, or txt — up to 20MB</p>
+      <input type="file" id="document-input" accept=".pdf,.epub,.txt" />
+      <label class="field-label field-label--secondary" for="sentence-limit">Limit (optional, for a quick test)</label>
+      <input type="number" id="sentence-limit" min="1" max="800" placeholder="e.g. 20 sentences" />
+    </section>
+
+  </main>
+
+  <div class="voice-select" role="radiogroup" aria-label="Voice">
+    <span class="field-label">Voice</span>
+    <div class="voice-options">
+      <label class="voice-pill">
+        <input type="radio" name="voice" value="female" checked />
+        <span>Female</span>
+      </label>
+      <label class="voice-pill">
+        <input type="radio" name="voice" value="male" />
+        <span>Male</span>
+      </label>
+    </div>
+  </div>
+
+  <button id="submit-btn" class="primary-btn">Translate &amp; speak</button>
+
+  <section id="status" class="status" hidden>
+    <div class="waveform" aria-hidden="true">
+      <span></span><span></span><span></span><span></span><span></span>
+    </div>
+    <p id="status-text">Translating…</p>
+  </section>
+
+  <section id="result" class="result" hidden>
+    <p class="field-label">Luganda text</p>
+    <p id="result-text" class="result-text"></p>
+    <audio id="result-audio" controls></audio>
+    <a id="download-link" class="download-link" download="voice-bridge-output.mp3">Download audio</a>
+  </section>
+
+  <section id="error" class="error" role="alert" hidden></section>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
