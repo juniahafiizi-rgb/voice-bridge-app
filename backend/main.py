@@ -31,7 +31,7 @@ load_dotenv()
 # Configuration & startup checks
 # ---------------------------------------------------------------------------
 
-SUNBIRD_API_KEY = os.environ.get("SUNBIRD_API_KEY")
+SUNBIRD_API_KEY = os.environ.get("HF_TOKEN")
 if not SUNBIRD_API_KEY:
     raise RuntimeError(
         "SUNBIRD_API_KEY is not set. Add it to a .env file (local dev) or your "
