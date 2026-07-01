@@ -1,14 +1,39 @@
 """
-Sunbird AI models via Hugging Face Inference API.
-No RunPod/Redis/PostgreSQL needed — HF hosts the models for free.
+Runs translation and TTS directly inside the container using
+transformers — no external API calls needed.
 """
-import asyncio
-import random
-import httpx
+import io
+import torch
+from transformers import MarianMTModel, MarianTokenizer
+from speechbrain.inference.TTS import Tacotron2
+from speechbrain.inference.vocoders import HIFIGAN
+import soundfile as sf
 
-HF_BASE = "https://api-inference.huggingface.co/models"
-TRANSLATE_MODEL = "Sunbird/translate-nllb-1.3b-salt"
-TTS_MODEL = "Sunbird/sunbird-lug-tts"
+# Lightweight English→Luganda model (~300MB, fits on free tier)
+TRANSLATE_MODEL = "Helsinki-NLP/opus-mt-en-mul"
+_tokenizer = None
+_model = None
+_tacotron = None
+_hifigan = None
+
+
+def _load_translation():
+    global _tokenizer, _model
+    if _tokenizer is None:
+        _tokenizer = MarianTokenizer.from_pretrained(TRANSLATE_MODEL)
+        _model = MarianMTModel.from_pretrained(TRANSLATE_MODEL)
+        _model.eval()
+
+
+def _load_tts():
+    global _tacotron, _hifigan
+    if _tacotron is None:
+        _tacotron = Tacotron2.from_hparams(
+            source="Sunbird/sunbird-lug-tts", savedir="/tmp/tts_model"
+        )
+        _hifigan = HIFIGAN.from_hparams(
+            source="speechbrain/tts-hifigan-ljspeech", savedir="/tmp/vocoder"
+        )
 
 
 class SunbirdAPIError(Exception):
@@ -16,79 +41,43 @@ class SunbirdAPIError(Exception):
 
 
 class SunbirdClient:
-    def __init__(self, api_key: str, timeout: float = 60.0, max_retries: int = 3):
-        if not api_key:
-            raise ValueError("HF API key is required")
-        self.headers = {"Authorization": f"Bearer {api_key}"}
-        self.timeout = timeout
-        self.max_retries = max_retries
-
-    async def _post(self, url: str, payload: dict) -> dict:
-        last_error = None
-        for attempt in range(self.max_retries):
-            try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.post(url, headers=self.headers, json=payload)
-                    if resp.status_code == 503:
-                        # Model is loading — wait and retry
-                        wait = resp.json().get("estimated_time", 20)
-                        await asyncio.sleep(min(wait, 30))
-                        continue
-                    resp.raise_for_status()
-                    return resp.json()
-            except Exception as e:
-                last_error = e
-                await asyncio.sleep((2 ** attempt) + random.random())
-        raise SunbirdAPIError(f"Request failed after {self.max_retries} attempts: {last_error}")
+    def __init__(self, api_key: str = "", **kwargs):
+        pass  # No external API needed
 
     async def translate(self, text: str, source: str = "eng", target: str = "lug") -> str:
-        url = f"{HF_BASE}/{TRANSLATE_MODEL}"
-        # NLLB language code mapping
-        lang_map = {
-            "eng": "eng_Latn", "lug": "lug_Latn",
-            "ach": "luo_Latn", "nyn": "nyn_Latn",
-        }
-        payload = {
-            "inputs": text,
-            "parameters": {
-                "src_lang": lang_map.get(source, source),
-                "tgt_lang": lang_map.get(target, target),
-            }
-        }
-        result = await self._post(url, payload)
-        if isinstance(result, list) and result:
-            return result[0].get("translation_text", "")
-        raise SunbirdAPIError(f"Unexpected translation response: {result}")
+        try:
+            _load_translation()
+            # MarianMT uses >>lug<< target language tag
+            tagged = f">>lug<< {text}"
+            inputs = _tokenizer([tagged], return_tensors="pt", padding=True)
+            with torch.no_grad():
+                output = _model.generate(**inputs)
+            result = _tokenizer.decode(output[0], skip_special_tokens=True)
+            return result
+        except Exception as e:
+            raise SunbirdAPIError(f"Translation failed: {e}")
 
     async def text_to_speech(self, text: str, **kwargs) -> bytes:
-        url = f"{HF_BASE}/{TTS_MODEL}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for attempt in range(self.max_retries):
-                resp = await client.post(url, headers=self.headers, json={"inputs": text})
-                if resp.status_code == 503:
-                    await asyncio.sleep(20)
-                    continue
-                resp.raise_for_status()
-                return resp.content
-        raise SunbirdAPIError("TTS failed after retries")
+        try:
+            _load_tts()
+            mel, _, _ = _tacotron.encode_text(text)
+            waveforms = _hifigan.decode_batch(mel)
+            waveform_cpu = waveforms.squeeze(1).cpu().numpy()[0]
+            buf = io.BytesIO()
+            sf.write(buf, waveform_cpu, 22050, format="WAV")
+            return buf.getvalue()
+        except Exception as e:
+            raise SunbirdAPIError(f"TTS failed: {e}")
 
     async def speech_to_text(self, audio_bytes: bytes, filename: str, language: str = "eng") -> str:
-        # Use OpenAI Whisper via HF Inference API for English STT
-        url = f"{HF_BASE}/openai/whisper-large-v3"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for attempt in range(self.max_retries):
-                resp = await client.post(
-                    url,
-                    headers=self.headers,
-                    content=audio_bytes,
-                )
-                if resp.status_code == 503:
-                    await asyncio.sleep(20)
-                    continue
-                resp.raise_for_status()
-                result = resp.json()
-                text = result.get("text")
-                if not text:
-                    raise SunbirdAPIError("No transcription returned")
-                return text
-        raise SunbirdAPIError("STT failed after retries")
+        try:
+            import whisper, tempfile, os
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(audio_bytes)
+                tmp_path = f.name
+            asr = whisper.load_model("base")
+            result = asr.transcribe(tmp_path)
+            os.unlink(tmp_path)
+            return result["text"]
+        except Exception as e:
+            raise SunbirdAPIError(f"STT failed: {e}")
