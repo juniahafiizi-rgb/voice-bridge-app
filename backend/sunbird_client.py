@@ -1,102 +1,94 @@
 """
-Thin async client around Sunbird AI's hosted API.
-Docs referenced: https://salt.sunbird.ai/API/
+Sunbird AI models via Hugging Face Inference API.
+No RunPod/Redis/PostgreSQL needed — HF hosts the models for free.
 """
 import asyncio
 import random
 import httpx
 
-SUNBIRD_BASE_URL = "https://api.sunbird.ai"
-
-# Sunbird's hosted Luganda voice is female only (speaker_id 248) at the time this
-# was written. There is no male Luganda speaker available server-side, which is why
-# audio_utils.deepen_voice() exists as a post-processing step, not a workaround.
-LUGANDA_SPEAKER_ID = 248
+HF_BASE = "https://api-inference.huggingface.co/models"
+TRANSLATE_MODEL = "Sunbird/translate-nllb-1.3b-salt"
+TTS_MODEL = "Sunbird/sunbird-lug-tts"
 
 
 class SunbirdAPIError(Exception):
-    """Raised whenever Sunbird's API returns an error or an unexpected response shape."""
+    pass
 
 
 class SunbirdClient:
     def __init__(self, api_key: str, timeout: float = 60.0, max_retries: int = 3):
         if not api_key:
-            raise ValueError("Sunbird API key is required")
-        self.api_key = api_key
+            raise ValueError("HF API key is required")
+        self.headers = {"Authorization": f"Bearer {api_key}"}
         self.timeout = timeout
         self.max_retries = max_retries
-        self.headers = {"Authorization": f"Bearer {api_key}"}
 
-    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+    async def _post(self, url: str, payload: dict) -> dict:
         last_error = None
         for attempt in range(self.max_retries):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    resp = await client.request(method, url, **kwargs)
-
-                # Retry on rate limiting and transient server/worker errors
-                if resp.status_code in (429, 503, 504):
-                    last_error = SunbirdAPIError(
-                        f"{resp.status_code}: {resp.text[:200]}"
-                    )
-                    await asyncio.sleep((2 ** attempt) + random.random())
-                    continue
-
-                resp.raise_for_status()
-                return resp
-
-            except httpx.HTTPStatusError as e:
-                # Non-retryable client errors (400, 401, 422...) fail immediately
-                raise SunbirdAPIError(
-                    f"{e.response.status_code}: {e.response.text[:300]}"
-                ) from e
-            except httpx.RequestError as e:
+                    resp = await client.post(url, headers=self.headers, json=payload)
+                    if resp.status_code == 503:
+                        # Model is loading — wait and retry
+                        wait = resp.json().get("estimated_time", 20)
+                        await asyncio.sleep(min(wait, 30))
+                        continue
+                    resp.raise_for_status()
+                    return resp.json()
+            except Exception as e:
                 last_error = e
                 await asyncio.sleep((2 ** attempt) + random.random())
-
         raise SunbirdAPIError(f"Request failed after {self.max_retries} attempts: {last_error}")
 
     async def translate(self, text: str, source: str = "eng", target: str = "lug") -> str:
-        url = f"{SUNBIRD_BASE_URL}/tasks/nllb_translate"
-        payload = {"source_language": source, "target_language": target, "text": text}
-        resp = await self._request(
-            "POST", url, headers={**self.headers, "Content-Type": "application/json"}, json=payload
-        )
-        data = resp.json()
-        output = data.get("output", {})
-        if output.get("Error"):
-            raise SunbirdAPIError(f"Translation worker error: {output['Error']}")
-        translated = output.get("translated_text")
-        if not translated:
-            raise SunbirdAPIError("Translation response missing 'translated_text'")
-        return translated
+        url = f"{HF_BASE}/{TRANSLATE_MODEL}"
+        # NLLB language code mapping
+        lang_map = {
+            "eng": "eng_Latn", "lug": "lug_Latn",
+            "ach": "luo_Latn", "nyn": "nyn_Latn",
+        }
+        payload = {
+            "inputs": text,
+            "parameters": {
+                "src_lang": lang_map.get(source, source),
+                "tgt_lang": lang_map.get(target, target),
+            }
+        }
+        result = await self._post(url, payload)
+        if isinstance(result, list) and result:
+            return result[0].get("translation_text", "")
+        raise SunbirdAPIError(f"Unexpected translation response: {result}")
 
-    async def text_to_speech(
-        self, text: str, speaker_id: int = LUGANDA_SPEAKER_ID, temperature: float = 0.7
-    ) -> bytes:
-        url = f"{SUNBIRD_BASE_URL}/tasks/tts"
-        payload = {"text": text, "speaker_id": speaker_id, "temperature": temperature}
-        resp = await self._request(
-            "POST", url, headers={**self.headers, "Content-Type": "application/json"}, json=payload
-        )
-        data = resp.json()
-        audio_url = data.get("output", {}).get("audio_url")
-        if not audio_url:
-            raise SunbirdAPIError("TTS response missing 'audio_url'")
-
-        # The signed URL expires in ~120 seconds, so download right away.
+    async def text_to_speech(self, text: str, **kwargs) -> bytes:
+        url = f"{HF_BASE}/{TTS_MODEL}"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            audio_resp = await client.get(audio_url)
-            audio_resp.raise_for_status()
-            return audio_resp.content
+            for attempt in range(self.max_retries):
+                resp = await client.post(url, headers=self.headers, json={"inputs": text})
+                if resp.status_code == 503:
+                    await asyncio.sleep(20)
+                    continue
+                resp.raise_for_status()
+                return resp.content
+        raise SunbirdAPIError("TTS failed after retries")
 
     async def speech_to_text(self, audio_bytes: bytes, filename: str, language: str = "eng") -> str:
-        url = f"{SUNBIRD_BASE_URL}/tasks/stt"
-        files = {"audio": (filename, audio_bytes)}
-        data = {"language": language, "adapter": language}
-        resp = await self._request("POST", url, headers=self.headers, files=files, data=data)
-        result = resp.json()
-        text = result.get("audio_transcription")
-        if not text:
-            raise SunbirdAPIError("No transcription produced for this audio")
-        return text
+        # Use OpenAI Whisper via HF Inference API for English STT
+        url = f"{HF_BASE}/openai/whisper-large-v3"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for attempt in range(self.max_retries):
+                resp = await client.post(
+                    url,
+                    headers=self.headers,
+                    content=audio_bytes,
+                )
+                if resp.status_code == 503:
+                    await asyncio.sleep(20)
+                    continue
+                resp.raise_for_status()
+                result = resp.json()
+                text = result.get("text")
+                if not text:
+                    raise SunbirdAPIError("No transcription returned")
+                return text
+        raise SunbirdAPIError("STT failed after retries")
