@@ -1,14 +1,19 @@
 FROM python:3.11-slim
 
-# ffmpeg is required for video audio extraction
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg \
+        build-essential \
+        git \
     && rm -rf /var/lib/apt/lists/*
+
+# Fix pkg_resources issue before installing anything else
+RUN pip install --upgrade pip setuptools wheel
 
 WORKDIR /app
 
 COPY backend/requirements.txt ./backend/requirements.txt
-RUN pip install --no-cache-dir -r backend/requirements.txt --timeout 120
+RUN pip install --no-cache-dir -r backend/requirements.txt
 
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
