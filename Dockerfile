@@ -8,7 +8,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY backend/requirements.txt ./backend/requirements.txt
-RUN pip install --no-cache-dir -r backend/requirements.txt
+RUN pip install --no-cache-dir -r backend/requirements.txt --timeout 120
 
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
